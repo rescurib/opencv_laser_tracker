@@ -24,7 +24,7 @@ int main(int argc, char** argv) {
     }
 
     // EWMA learing rate
-    const double alpha = 0.05;
+    const double alpha = 0.025;
 
     cv::Mat currentFrame, grayFrame, diff;
     cv::Mat background; // CV_32F acumulador para el fondo
@@ -57,7 +57,7 @@ int main(int argc, char** argv) {
         // significativas (transientes brillantes)
         cv::Scalar mean, stddev;
         cv::meanStdDev(diff, mean, stddev);
-        double threshold = mean[0] + 3 * stddev[0];
+        double threshold = mean[0] + 4 * stddev[0];
         cv::Mat foregroundMask;
         cv::threshold(diff, foregroundMask, threshold, 255, cv::THRESH_BINARY);
 
@@ -65,7 +65,13 @@ int main(int argc, char** argv) {
         cv::Mat result = cv::Mat::zeros(frame.size(), frame.type());
         frame.copyTo(result, foregroundMask);
 
-        cv::imshow("Webcam", result);
+        cv::imshow("Mascara", result);
+
+        cv::imshow("Fondo", bgU8);
+
+        cv::imshow("Diferencia", diff);
+
+
         int key = cv::waitKey(30);
         if (key == 27) { // ESC
             break;
