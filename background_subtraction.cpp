@@ -24,8 +24,14 @@ int main(int argc, char** argv) {
     }
 
     // EWMA learing rate
-    const double alpha = 0.025;
+    double alpha = 0.01;
+    int alpha_counter = 0;
 
+    double threshold;
+    cv::Scalar scene_mean, scene_stddev;
+    cv::Scalar old_scene_mean, old_scene_stddev;
+    double min_threshold = 30.0; // Umbral mínimo para evitar ruido excesivo
+    cv::Scalar mean, stddev;
     cv::Mat currentFrame, grayFrame, diff;
     cv::Mat background; // CV_32F acumulador para el fondo
 
@@ -40,24 +46,58 @@ int main(int argc, char** argv) {
 
         cv::cvtColor(frame, grayFrame, cv::COLOR_BGR2GRAY);
 
+        // Calcular iluminacion media del frame.
+        cv::meanStdDev(grayFrame, scene_mean, scene_stddev);
+
         // Inicializar el fondo con el primer frame
-        if (background.empty()) {
+        if (background.empty()) 
+        {
             grayFrame.convertTo(background, CV_32F);
-        } else {
+        } else 
+          {
             // Actualizar el fondo con EWMA
+            double mean_diff = cv::abs(scene_mean[0] - old_scene_mean[0]);
+            if(mean_diff > 50) 
+            { // Si hay un cambio brusco en la iluminación, actualizar el fondo más rápido
+              // durante algunos frames.
+                alpha_counter = 30;
+                alpha = 0.5; // Aumentar el learning rate para adaptarse rápidamente
+            }
+
+            if(alpha_counter > 0) 
+            {
+                alpha_counter--;
+                if(alpha_counter == 0) 
+                {
+                    alpha = 0.01; // Volver al learning rate normal
+                }
+            }
+
             cv::accumulateWeighted(grayFrame, background, alpha);
-        }
+            
+          }
 
         // Calcular la diferencia absoluta entre el frame actual y el fondo
         cv::Mat bgU8;
         background.convertTo(bgU8, CV_8U);
+
+        cv::GaussianBlur(grayFrame, grayFrame, cv::Size(7, 7), 1.5);
+        cv::GaussianBlur(bgU8, bgU8, cv::Size(7, 7), 1.5);
+
         cv::absdiff(grayFrame, bgU8, diff);
+
+        // Filtro de mediana para reducir ruido en la mascara de diferencia
+        //cv::medianBlur(diff, diff, 3);
 
         // Umbral en la media + 3*sigma de la diferencia para mantener desviaciones
         // significativas (transientes brillantes)
-        cv::Scalar mean, stddev;
         cv::meanStdDev(diff, mean, stddev);
-        double threshold = mean[0] + 4 * stddev[0];
+        threshold = mean[0] + 3 * stddev[0];
+
+        // Ajustar umbral mínimo según la iluminación de la escena
+        min_threshold = 25 + (1 / scene_mean[0]); 
+        threshold = std::max(threshold, min_threshold);
+
         cv::Mat foregroundMask;
         cv::threshold(diff, foregroundMask, threshold, 255, cv::THRESH_BINARY);
 
@@ -71,6 +111,8 @@ int main(int argc, char** argv) {
 
         cv::imshow("Diferencia", diff);
 
+        old_scene_mean = scene_mean;
+        old_scene_stddev = scene_stddev;
 
         int key = cv::waitKey(30);
         if (key == 27) { // ESC
