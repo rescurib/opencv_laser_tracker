@@ -9,8 +9,8 @@ int main(int argc, char** argv) {
         cam_index = std::stoi(argv[1]);
     }
 
-    // Load AVI video file instead of webcam
-    cv::VideoCapture cap("ev_2008_7.avi");
+    // Load video file instead of webcam
+    cv::VideoCapture cap("video_4.mp4");
 
     // Get frame rate of the video
     double fps = cap.get(cv::CAP_PROP_FPS);
