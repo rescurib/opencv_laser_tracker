@@ -3,6 +3,9 @@
 
 // EWMA (Exponentially Weighted Moving Average) como modelo de fondo simple
 
+// Mostrar resoluciones disponibles de la webcam en Linux:
+// v4l2-ctl --list-formats-ext -d /dev/video0
+
 int main(int argc, char** argv) {
     int cam_index = 0;
     if (argc > 1) {
@@ -17,6 +20,10 @@ int main(int argc, char** argv) {
     // Linux (usar V4L2 para evitar problemas con GStreamer)
     cv::VideoCapture cap(cam_index, cv::CAP_V4L2);
 #endif
+
+    // Establecer resolucion
+    cap.set(cv::CAP_PROP_FRAME_WIDTH, 320);
+    cap.set(cv::CAP_PROP_FRAME_HEIGHT, 240);
 
     if (!cap.isOpened()) {
         std::cerr << "No se pudo abrir la cámara con índice " << cam_index << std::endl;
@@ -85,6 +92,7 @@ int main(int argc, char** argv) {
         cv::Mat bgU8;
         background.convertTo(bgU8, CV_8U);
 
+        // Suavizar ambas imágenes para reducir ruido y vibraciones de la cámara
         cv::GaussianBlur(grayFrame, grayFrame, cv::Size(7, 7), 1.5);
         cv::GaussianBlur(bgU8, bgU8, cv::Size(7, 7), 1.5);
         cv::absdiff(grayFrame, bgU8, diff);
@@ -106,42 +114,9 @@ int main(int argc, char** argv) {
         cv::Mat result = cv::Mat::zeros(frame.size(), frame.type());
         frame.copyTo(result, foregroundMask);
 
-        // Convert ROI into HSV to visualize the foreground mask better
-        cv::cvtColor(result, hsvFrame, cv::COLOR_BGR2HSV);
-
-        // Threshold the saturation and value channels to detect bright objects
-        std::vector<cv::Mat> hsvChannels;
-        cv::split(hsvFrame, hsvChannels);
-        
-        // Value masking
-        cv::threshold(hsvChannels[2], valueMask, 180, 255, cv::THRESH_BINARY); // Value threshold
-
-        //cv::bitwise_and(detectionMask, brightMask, brightMask);
-        result = cv::Mat::zeros(frame.size(), frame.type());
-        frame.copyTo(result, valueMask);
-
-        // Compute moments to get center of mass of the detected bright areas
-        cv::Moments m = cv::moments(valueMask, true);
-
-        // Draw a circle at the center of mass if the area lays in a range
-        if ( (m.m00 > 8) && (m.m00 < 250) ) { // Area threshold to avoid noise
-            int cx = static_cast<int>(m.m10 / m.m00);
-            int cy = static_cast<int>(m.m01 / m.m00);
-            cv::circle(frame, cv::Point(cx, cy), 20, cv::Scalar(0, 0, 255), 2);
-        }
-
-
-        cv::imshow("Bright Detection", result);
-
-        //cv::imshow("Mascara", result);
-
-        //cv::imshow("Fondo", bgU8);
-        
-        // Show saturation channel?
-        //cv::imshow("Saturation Channel", hsvChannels[2]);
-
         cv::imshow("Diferencia", diff);
-        cv::imshow("Main Frame", frame);
+        cv::imshow("Original", frame);
+        cv::imshow("Fondo", bgU8);
 
         old_scene_mean = scene_mean;
         old_scene_stddev = scene_stddev;
