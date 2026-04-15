@@ -45,47 +45,65 @@ int main(int argc, char** argv) {
     std::cout << "Presiona ESC para salir.\n";
     cv::Mat frame;
 
-    // --- Inicialización del Filtro de Kalman ---
-    // Estado: [x, y, dx, dy] donde (x, y) es la posición y (dx, dy) la velocidad estimada
-    cv::KalmanFilter KF(4, 2, 0);
 
-    // Matriz de transición de estado: modelo de velocidad constante
-    KF.transitionMatrix = (cv::Mat_<float>(4, 4) <<
-        1, 0, 1, 0,
-        0, 1, 0, 1,
-        0, 0, 1, 0,
-        0, 0, 0, 1);
+    // --- Kalman filter variables ---
+    cv::KalmanFilter KF;
+    cv::Mat measurement;
+    bool kf_initialized = false;
 
-    // Matriz de observación: medimos x e y directamente, no la velocidad
-    // CORRECCIÓN: definida explícitamente en lugar de setIdentity()
-    KF.measurementMatrix = (cv::Mat_<float>(2, 4) <<
-        1, 0, 0, 0,
-        0, 1, 0, 0);
+    // --- Kalman filter functions ---
+    auto initKalmanFilter = []() {
+        cv::KalmanFilter kf(4, 2, 0);
+        // Transition matrix (constant velocity model)
+        kf.transitionMatrix = (cv::Mat_<float>(4, 4) <<
+            1, 0, 1, 0,
+            0, 1, 0, 1,
+            0, 0, 1, 0,
+            0, 0, 0, 1);
+        // Measurement matrix
+        kf.measurementMatrix = (cv::Mat_<float>(2, 4) <<
+            1, 0, 0, 0,
+            0, 1, 0, 0);
+        // Process noise covariance
+        kf.processNoiseCov = (cv::Mat_<float>(4, 4) <<
+            1e-2, 0,    0,    0,
+            0,    1e-2, 0,    0,
+            0,    0,    20.0, 0,
+            0,    0,    0,   20.0);
+        // Measurement noise covariance
+        setIdentity(kf.measurementNoiseCov, cv::Scalar::all(1e-1));
+        // Initial error covariance
+        setIdentity(kf.errorCovPost, cv::Scalar::all(1));
+        kf.errorCovPost.at<float>(2, 2) = 1e2;
+        kf.errorCovPost.at<float>(3, 3) = 1e2;
+        return kf;
+    };
 
-    // Covarianza del ruido de proceso
-    // Q_vel >> Q_pos para que la velocidad pueda cambiar rápido
-    // Aumentamos el ruido de velocidad para que la predicción sea más "futura"
-    KF.processNoiseCov = (cv::Mat_<float>(4, 4) <<
-        1e-2, 0,    0,    0,
-        0,    1e-2, 0,    0,
-        0,    0,    20.0, 0,
-        0,    0,    0,   20.0);
+    auto initMeasurement = []() {
+        return cv::Mat::zeros(2, 1, CV_32F);
+    };
 
-    // Covarianza del ruido de medición
-    // Sin cambios: 1e-1 es razonable para un centroide HSV/R-B
-    setIdentity(KF.measurementNoiseCov, cv::Scalar::all(1e-1));
+    auto kalmanPredict = [](cv::KalmanFilter& kf) {
+        cv::Mat prediction = kf.predict();
+        return cv::Point2f(prediction.at<float>(0), prediction.at<float>(1));
+    };
 
-    // Covarianza inicial del error
-    // CORRECCIÓN: alta incertidumbre solo en velocidad, no en posición
-    setIdentity(KF.errorCovPost, cv::Scalar::all(1));
-    KF.errorCovPost.at<float>(2, 2) = 1e2;
-    KF.errorCovPost.at<float>(3, 3) = 1e2;
+    auto kalmanCorrect = [](cv::KalmanFilter& kf, cv::Mat& measurement) {
+        kf.correct(measurement);
+        cv::Mat statePost = kf.statePost;
+        return cv::Point2f(statePost.at<float>(0), statePost.at<float>(1));
+    };
 
-    // Estado inicial: se establece con la primera medición válida (ver bucle principal)
-    //cv::randn(KF.statePost, cv::Scalar::all(0), cv::Scalar::all(0.1));
+    auto kalmanInitializeState = [](cv::KalmanFilter& kf, int cx, int cy) {
+        kf.statePost.at<float>(0) = cx;
+        kf.statePost.at<float>(1) = cy;
+        kf.statePost.at<float>(2) = 0;
+        kf.statePost.at<float>(3) = 0;
+    };
 
-    cv::Mat measurement = cv::Mat::zeros(2, 1, CV_32F); // Medición: posición (x, y)
-    bool kf_initialized = false; // Se inicializa con la primera medición válida
+    // Initialize Kalman filter and measurement
+    KF = initKalmanFilter();
+    measurement = initMeasurement();
 
     while (true) {
         cap >> frame;
@@ -137,7 +155,6 @@ int main(int argc, char** argv) {
         cv::GaussianBlur(bgU8, bgU8, cv::Size(7, 7), 1.5);
         cv::absdiff(grayFrame, bgU8, diff);
 
-
         // Umbral dinámico: media + k*sigma de la diferencia
         // k controla la sensibilidad a transientes (valores típicos: 1 a 3)
         cv::meanStdDev(diff, mean, stddev);
@@ -170,17 +187,13 @@ int main(int argc, char** argv) {
         result = cv::Mat::zeros(frame.size(), frame.type());
         frame.copyTo(result, valueMask);
 
-
         // Compute moments to get center of mass of the detected bright areas
         cv::Moments m = cv::moments(valueMask, true);
 
-        // --- Filtro de Kalman ---
-        // Predicción: dónde espera el filtro que esté el láser
-        cv::Mat prediction = KF.predict();
-        cv::Point2f predictPt(prediction.at<float>(0), prediction.at<float>(1));
+        // --- Kalman filter usage ---
+        cv::Point2f predictPt = kalmanPredict(KF);
 
-        // Si se detecta un área válida (medición confiable), corregir el filtro
-        // m.m00 = área detectada; ajustar límites según el tamaño esperado del spot
+        // Measurement: valid if area is within expected range
         bool valid_measurement = (m.m00 > 8) && (m.m00 < 100);
         cv::Point2f measuredPt;
         if (valid_measurement) {
@@ -190,31 +203,18 @@ int main(int argc, char** argv) {
             measurement.at<float>(0) = cx;
             measurement.at<float>(1) = cy;
             if (!kf_initialized) {
-                // Inicializar el estado del filtro con la primera medición válida
-                KF.statePost.at<float>(0) = cx;
-                KF.statePost.at<float>(1) = cy;
-                // Inicializar velocidad con la diferencia entre la primera y segunda medición
-                KF.statePost.at<float>(2) = 0;
-                KF.statePost.at<float>(3) = 0;
+                kalmanInitializeState(KF, cx, cy);
                 kf_initialized = true;
-            } else {
-                // No reinicializar velocidad después de la primera vez
             }
-            // Corrección: el filtro ajusta su predicción usando la medición
-            KF.correct(measurement);
+            kalmanCorrect(KF, measurement);
         }
 
-        // Visualización de los resultados del filtro de Kalman:
-        // Rojo: medición directa (centro de masa)
-        // Amarillo: predicción del filtro (sin corrección)
-        // Verde: estimación corregida (más robusta al ruido)
+        // Visualization
         if (valid_measurement) {
             cv::circle(frame, measuredPt, 20, cv::Scalar(0, 0, 255), 2); // Medición (rojo)
         }
         cv::circle(frame, predictPt, 20, cv::Scalar(0, 255, 255), 2); // Predicción (amarillo)
-        // Estimación corregida (verde)
-        cv::Mat statePost = KF.statePost;
-        cv::Point2f correctedPt(statePost.at<float>(0), statePost.at<float>(1));
+        cv::Point2f correctedPt(KF.statePost.at<float>(0), KF.statePost.at<float>(1));
         cv::circle(frame, correctedPt, 20, cv::Scalar(0, 255, 0), 2);
 
         // --- Leyenda explicativa de colores ---
