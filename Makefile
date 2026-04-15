@@ -1,5 +1,5 @@
 # Nombre del proyecto
-PROJECT_NAME = background_subtraction
+PROJECT_NAME = kf_laser_tracker
 
 # Archivos fuente
 SRC = $(PROJECT_NAME).cpp

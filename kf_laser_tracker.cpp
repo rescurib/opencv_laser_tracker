@@ -4,7 +4,7 @@
 // EWMA (Exponentially Weighted Moving Average) como modelo de fondo simple
 
 int main(int argc, char** argv) {
-    int cam_index = 1;
+    int cam_index = 0;
     if (argc > 1) {
         cam_index = std::stoi(argv[1]);
     }
@@ -48,25 +48,41 @@ int main(int argc, char** argv) {
     // --- Inicialización del Filtro de Kalman ---
     // Estado: [x, y, dx, dy] donde (x, y) es la posición y (dx, dy) la velocidad estimada
     cv::KalmanFilter KF(4, 2, 0);
-    // Matriz de transición de estado: modelo de movimiento constante
-    // Ajustar si se espera aceleración o movimientos no lineales
+
+    // Matriz de transición de estado: modelo de velocidad constante
     KF.transitionMatrix = (cv::Mat_<float>(4, 4) <<
         1, 0, 1, 0,
         0, 1, 0, 1,
         0, 0, 1, 0,
         0, 0, 0, 1);
-    // Matriz de observación: medimos directamente la posición (x, y)
-    setIdentity(KF.measurementMatrix);
-    // Covarianza del ruido de proceso: controla cuánto "confía" el filtro en el modelo de movimiento
-    // Valores más altos = más tolerancia a cambios bruscos (más suavizado)
-    setIdentity(KF.processNoiseCov, cv::Scalar::all(1e-4)); // Ajustar según el jitter esperado
-    // Covarianza del ruido de medición: controla cuánto "confía" el filtro en la medición
-    // Valores más altos = ignora más las mediciones ruidosas
-    setIdentity(KF.measurementNoiseCov, cv::Scalar::all(1e-1)); // Ajustar según el ruido de la cámara
+
+    // Matriz de observación: medimos x e y directamente, no la velocidad
+    // CORRECCIÓN: definida explícitamente en lugar de setIdentity()
+    KF.measurementMatrix = (cv::Mat_<float>(2, 4) <<
+        1, 0, 0, 0,
+        0, 1, 0, 0);
+
+    // Covarianza del ruido de proceso
+    // Q_vel >> Q_pos para que la velocidad pueda cambiar rápido
+    // Aumentamos el ruido de velocidad para que la predicción sea más "futura"
+    KF.processNoiseCov = (cv::Mat_<float>(4, 4) <<
+        1e-2, 0,    0,    0,
+        0,    1e-2, 0,    0,
+        0,    0,    20.0, 0,
+        0,    0,    0,   20.0);
+
+    // Covarianza del ruido de medición
+    // Sin cambios: 1e-1 es razonable para un centroide HSV/R-B
+    setIdentity(KF.measurementNoiseCov, cv::Scalar::all(1e-1));
+
     // Covarianza inicial del error
+    // CORRECCIÓN: alta incertidumbre solo en velocidad, no en posición
     setIdentity(KF.errorCovPost, cv::Scalar::all(1));
-    // Estado inicial aleatorio pequeño
-    cv::randn(KF.statePost, cv::Scalar::all(0), cv::Scalar::all(0.1));
+    KF.errorCovPost.at<float>(2, 2) = 1e2;
+    KF.errorCovPost.at<float>(3, 3) = 1e2;
+
+    // Estado inicial: se establece con la primera medición válida (ver bucle principal)
+    //cv::randn(KF.statePost, cv::Scalar::all(0), cv::Scalar::all(0.1));
 
     cv::Mat measurement = cv::Mat::zeros(2, 1, CV_32F); // Medición: posición (x, y)
     bool kf_initialized = false; // Se inicializa con la primera medición válida
@@ -177,9 +193,12 @@ int main(int argc, char** argv) {
                 // Inicializar el estado del filtro con la primera medición válida
                 KF.statePost.at<float>(0) = cx;
                 KF.statePost.at<float>(1) = cy;
+                // Inicializar velocidad con la diferencia entre la primera y segunda medición
                 KF.statePost.at<float>(2) = 0;
                 KF.statePost.at<float>(3) = 0;
                 kf_initialized = true;
+            } else {
+                // No reinicializar velocidad después de la primera vez
             }
             // Corrección: el filtro ajusta su predicción usando la medición
             KF.correct(measurement);
